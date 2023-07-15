@@ -4478,45 +4478,15 @@ execve(proc_t p, struct execve_args *uap, int32_t *retval)
 	return err;
 }
 
-/*
- * __mac_execve
- *
- * Parameters:	uap->fname		File name to exec
- *		uap->argp		Argument list
- *		uap->envp		Environment list
- *		uap->mac_p		MAC label supplied by caller
- *
- * Returns:	0			Success
- *		EINVAL			Invalid argument
- *		ENOTSUP			Not supported
- *		ENOEXEC			Executable file format error
- *	exec_activate_image:EINVAL	Invalid argument
- *	exec_activate_image:EACCES	Permission denied
- *	exec_activate_image:EINTR	Interrupted function
- *	exec_activate_image:ENOMEM	Not enough space
- *	exec_activate_image:EFAULT	Bad address
- *	exec_activate_image:ENAMETOOLONG	Filename too long
- *	exec_activate_image:ENOEXEC	Executable file format error
- *	exec_activate_image:ETXTBSY	Text file busy [misuse of error code]
- *	exec_activate_image:EBADEXEC	The executable is corrupt/unknown
- *	exec_activate_image:???
- *	mac_execve_enter:???
- *
- * TODO:	Dynamic linker header address on stack is copied via suword()
- */
-int
-__mac_execve(proc_t p, struct __mac_execve_args *uap, int32_t *retval)
+int __mac_execve(proc_t p, struct __mac_execve_args *uap, int32_t *retval)
 {
-	char *bufp = NULL;
-	struct image_params *imgp;
-	struct vnode_attr *vap;
-	struct vnode_attr *origvap;
+    // 字段设置
 	int error;
 	int is_64 = IS_64BIT_PROCESS(p);
 	struct vfs_context context;
-	struct uthread  *uthread;
+	struct uthread  *uthread; // 线程
 	task_t old_task = current_task();
-	task_t new_task = NULL;
+	task_t new_task = NULL; // Mach Task(进程)
 	boolean_t should_release_proc_ref = FALSE;
 	boolean_t exec_done = FALSE;
 	boolean_t in_vfexec = FALSE;
@@ -4525,12 +4495,10 @@ __mac_execve(proc_t p, struct __mac_execve_args *uap, int32_t *retval)
 	context.vc_thread = current_thread();
 	context.vc_ucred = kauth_cred_proc_ref(p);      /* XXX must NOT be kauth_cred_get() */
 
-	/* Allocate a big chunk for locals instead of using stack since these
-	 * structures a pretty big.
-	 */
-	bufp = kheap_alloc(KHEAP_TEMP,
+	// 分配大块堆内存，不用栈是因为 Mach-O 结构很大。
+    char *bufp = kheap_alloc(KHEAP_TEMP,
 	    sizeof(*imgp) + sizeof(*vap) + sizeof(*origvap), Z_WAITOK | Z_ZERO);
-	imgp = (struct image_params *) bufp;
+    image_params *imgp = (struct image_params *) bufp; // 可执行程序参数
 	if (bufp == NULL) {
 		error = ENOMEM;
 		goto exit_with_error;
@@ -4538,10 +4506,10 @@ __mac_execve(proc_t p, struct __mac_execve_args *uap, int32_t *retval)
 	vap = (struct vnode_attr *) (bufp + sizeof(*imgp));
 	origvap = (struct vnode_attr *) (bufp + sizeof(*imgp) + sizeof(*vap));
 
-	/* Initialize the common data in the image_params structure */
-	imgp->ip_user_fname = uap->fname;
-	imgp->ip_user_argv = uap->argp;
-	imgp->ip_user_envv = uap->envp;
+	// 初始化 imgp 结构里的公共数据
+	imgp->ip_user_fname = uap->fname; // 可执行程序的文件名
+	imgp->ip_user_argv = uap->argp; // 参数列表
+	imgp->ip_user_envv = uap->envp; // 环境列表
 	imgp->ip_vattr = vap;
 	imgp->ip_origvattr = origvap;
 	imgp->ip_vfs_context = &context;
@@ -4568,31 +4536,7 @@ __mac_execve(proc_t p, struct __mac_execve_args *uap, int32_t *retval)
 	} else {
 		imgp->ip_flags |= IMGPF_EXEC;
 
-		/*
-		 * For execve case, create a new task and thread
-		 * which points to current_proc. The current_proc will point
-		 * to the new task after image activation and proc ref drain.
-		 *
-		 * proc (current_proc) <-----  old_task (current_task)
-		 *  ^ |                                ^
-		 *  | |                                |
-		 *  | ----------------------------------
-		 *  |
-		 *  --------- new_task (task marked as TF_EXEC_COPY)
-		 *
-		 * After image activation, the proc will point to the new task
-		 * and would look like following.
-		 *
-		 * proc (current_proc)  <-----  old_task (current_task, marked as TPF_DID_EXEC)
-		 *  ^ |
-		 *  | |
-		 *  | ----------> new_task
-		 *  |               |
-		 *  -----------------
-		 *
-		 * During exec any transition from new_task -> proc is fine, but don't allow
-		 * transition from proc->task, since it will modify old_task.
-		 */
+        // 程序如果是启动态，就需要 fork 新进程
 		imgp->ip_new_thread = fork_create_child(old_task,
 		    NULL,
 		    p,
@@ -4600,7 +4544,7 @@ __mac_execve(proc_t p, struct __mac_execve_args *uap, int32_t *retval)
 		    p->p_flag & P_LP64,
 		    task_get_64bit_data(old_task),
 		    TRUE);
-		/* task and thread ref returned by fork_create_child */
+		// 异常处理
 		if (imgp->ip_new_thread == NULL) {
 			error = ENOMEM;
 			goto exit_with_error;
@@ -4612,6 +4556,7 @@ __mac_execve(proc_t p, struct __mac_execve_args *uap, int32_t *retval)
 
 	imgp->ip_subsystem_root_path = p->p_subsystem_root_path;
 
+    // 加载解析 Mach-O 到 imgp
 	error = exec_activate_image(imgp);
 	/* thread and task ref returned for vfexec case */
 
@@ -4703,13 +4648,14 @@ __mac_execve(proc_t p, struct __mac_execve_args *uap, int32_t *retval)
 		/* Sever any extant thread affinity */
 		thread_affinity_exec(current_thread());
 
-		/* Inherit task role from old task to new task for exec */
+		// 继承进程处理
 		if (!in_vfexec) {
 			proc_inherit_task_role(new_task, old_task);
 		}
 
 		thread_t main_thread = imgp->ip_new_thread;
 
+        // 设置进程的主线程
 		task_set_main_thread_qos(new_task, main_thread);
 
 #if __has_feature(ptrauth_calls)
